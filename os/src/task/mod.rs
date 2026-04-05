@@ -45,6 +45,9 @@ pub struct TaskManagerInner {
     tasks: [TaskControlBlock; MAX_APP_NUM],
     /// id of current `Running` task
     current_task: usize,
+
+    /// Numbers of syscall, of size predefined 512
+    num_called: [[usize; 512]; MAX_APP_NUM],
 }
 
 lazy_static! {
@@ -65,6 +68,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    num_called: [[0; 512]; MAX_APP_NUM],
                 })
             },
         }
@@ -135,6 +139,20 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// Increase the internal programme counter by 1
+    fn increase_counter(&self, which: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let program_id = inner.current_task;
+        inner.num_called[program_id][which] += 1;
+    }
+
+    /// Get the counter of a given programme
+    fn get_counter(&self, which: usize) -> usize {
+        let inner = self.inner.exclusive_access();
+        let program_id = inner.current_task;
+        inner.num_called[program_id][which]
+    }
 }
 
 /// Run the first task in task list.
@@ -168,4 +186,14 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// Increase the internal counter by 1
+pub fn increase_counter(which: usize) {
+    TASK_MANAGER.increase_counter(which);
+}
+
+/// Get the counter of a given programme
+pub fn get_counter(which: usize) -> usize {
+    TASK_MANAGER.get_counter(which)
 }
