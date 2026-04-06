@@ -17,6 +17,7 @@ mod task;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
@@ -46,6 +47,9 @@ struct TaskManagerInner {
     tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
     current_task: usize,
+
+    /// Counter
+    counter: BTreeMap<(usize, usize), usize>,
 }
 
 lazy_static! {
@@ -64,6 +68,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    counter: BTreeMap::new(),
                 })
             },
         }
@@ -153,6 +158,38 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    fn increase_counter(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let key = (current, syscall_id);
+        inner
+            .counter
+            .entry(key)
+            .and_modify(|v| *v += 1)
+            .or_insert(1);
+    }
+
+    fn get_counter(&self, syscall_id: usize) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let key = (current, syscall_id);
+        *inner.counter.get(&key).unwrap_or(&0)
+    }
+
+    fn invoke_map(&self, start: usize, len: usize, property: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let task = &mut inner.tasks[current];
+        task.invoke_map(start, len, property)
+    }
+
+    fn invoke_unmap(&self, start: usize, len: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let task = &mut inner.tasks[current];
+        task.invoke_unmap(start, len)
+    }
 }
 
 /// Run the first task in task list.
@@ -201,4 +238,24 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Increase the number of syscall_id execution of current 'Running' task
+pub fn increase_counter(syscall_id: usize) {
+    TASK_MANAGER.increase_counter(syscall_id);
+}
+
+/// Get the counter of a specific syscall of current 'Running' task
+pub fn get_counter(syscall_id: usize) -> isize {
+    TASK_MANAGER.get_counter(syscall_id) as isize
+}
+
+/// Invokes mmap of memory set to allocate memory
+pub fn invoke_map(start: usize, len: usize, property: usize) -> isize {
+    TASK_MANAGER.invoke_map(start, len, property)
+}
+
+/// Invokes munmap to release memory
+pub fn invoke_unmap(start: usize, len: usize) -> isize {
+    TASK_MANAGER.invoke_unmap(start, len)
 }

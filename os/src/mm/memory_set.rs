@@ -262,6 +262,85 @@ impl MemorySet {
             false
         }
     }
+
+    /// Apply for a piece of memory for [start, start + len) with flags `property`
+    pub fn mmap(&mut self, start: usize, len: usize, property: usize) -> isize {
+        // INFO: do checks here
+        // unaligned
+        if start % PAGE_SIZE != 0 {
+            return -1;
+        }
+        // property
+        if property & !0x7 != 0 || property & 0x7 == 0 {
+            return -1;
+        }
+
+        let aligned_len = (len + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
+        let Some(end) = start.checked_add(aligned_len) else {
+            return -1;
+        };
+
+        // virtual address range
+        let st = VirtAddr::from(start).floor();
+        let ed = VirtAddr::from(end).ceil();
+
+        for vpn in VPNRange::new(st, ed) {
+            if self.translate(vpn).map_or(false, |pte| pte.is_valid()) {
+                // page is already allocated
+                return -1;
+            }
+        }
+
+        // grant permissions
+        let mut permission = MapPermission::U;
+        if property & 0b001 != 0 {
+            permission |= MapPermission::R;
+        }
+        if property & 0b010 != 0 {
+            permission |= MapPermission::W;
+        }
+        if property & 0b100 != 0 {
+            permission |= MapPermission::X;
+        }
+
+        self.insert_framed_area(st.into(), ed.into(), permission);
+
+        0
+    }
+
+    /// unmap for virtual memory [start, start + len)
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        if len == 0 {
+            return 0;
+        }
+        if start % PAGE_SIZE != 0 || len % PAGE_SIZE != 0 {
+            return -1;
+        }
+
+        let st_vpn = VirtAddr::from(start).floor();
+        let Some(end) = start.checked_add(len) else {
+            return -1;
+        };
+        let ed_vpn = VirtAddr::from(end).ceil();
+
+        // find this area in self.areas
+        let Some(index) = self
+            .areas
+            .iter()
+            .position(|a| a.vpn_range.get_start() == st_vpn && a.vpn_range.get_end() == ed_vpn)
+        else {
+            return -1;
+        };
+        let mut area = self.areas.remove(index);
+
+        // unmap vpns
+        area.unmap(&mut self.page_table);
+
+        unsafe {
+            asm!("sfence.vma");
+        }
+        0
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {

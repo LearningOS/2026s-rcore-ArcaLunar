@@ -96,6 +96,16 @@ impl TaskControlBlock {
             None
         }
     }
+
+    /// invokes mmap on memory set belonging to the task
+    pub fn invoke_map(&mut self, start: usize, len: usize, property: usize) -> isize {
+        self.memory_set.mmap(start, len, property)
+    }
+
+    /// invokes munmap on memory set belonging to the task
+    pub fn invoke_unmap(&mut self, start: usize, len: usize) -> isize {
+        self.memory_set.munmap(start, len)
+    }
 }
 
 #[derive(Copy, Clone, PartialEq)]
