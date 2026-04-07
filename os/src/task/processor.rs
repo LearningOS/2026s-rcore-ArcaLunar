@@ -63,6 +63,7 @@ pub fn run_tasks() {
             task_inner.task_status = TaskStatus::Running;
             // release coming task_inner manually
             drop(task_inner);
+            task.advance_stride();
             // release coming task TCB manually
             processor.current = Some(task);
             // release processor manually
@@ -108,4 +109,24 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     unsafe {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
     }
+}
+
+/// Calls mmap on current task
+pub fn invoke_mmap(start: usize, len: usize, prot: usize) -> isize {
+    current_task()
+        .unwrap()
+        .as_ref()
+        .inner_exclusive_access()
+        .memory_set
+        .mmap(start, len, prot)
+}
+
+/// Calls munmap on current task
+pub fn invoke_munmap(start: usize, len: usize) -> isize {
+    current_task()
+        .unwrap()
+        .as_ref()
+        .inner_exclusive_access()
+        .memory_set
+        .munmap(start, len)
 }

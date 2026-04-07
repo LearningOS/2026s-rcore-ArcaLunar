@@ -9,6 +9,8 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
 
+const BIG_STRIDE: isize = 114514;
+
 /// Task control block structure
 ///
 /// Directly save the contents that will not change during running
@@ -68,6 +70,12 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// Stride scheduling
+    pub stride: isize,
+
+    /// Stride scheduling, related to  step size added to stride
+    pub priority: isize,
 }
 
 impl TaskControlBlockInner {
@@ -118,6 +126,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    stride: 0,
+                    priority: 16,
                 })
             },
         };
@@ -191,6 +201,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    stride: 0,
+                    priority: 16,
                 })
             },
         });
@@ -204,6 +216,57 @@ impl TaskControlBlock {
         task_control_block
         // **** release child PCB
         // ---- release parent PCB
+    }
+
+    /// Spawn, without same address space
+    pub fn spawn(self: &Arc<Self>, app_data: &[u8]) -> Arc<Self> {
+        // get information from elf data
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(app_data);
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kstack_top = kernel_stack.get_top();
+        let pcb = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kstack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    heap_bottom: user_sp,
+                    program_brk: user_sp,
+                    stride: 0,
+                    priority: 16,
+                })
+            },
+        });
+
+        // add child
+        {
+            let mut parent = self.inner_exclusive_access();
+            parent.children.push(pcb.clone());
+        }
+
+        let trap_cx = pcb.inner_exclusive_access().get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(),
+            kstack_top,
+            trap_handler as usize,
+        );
+
+        pcb
     }
 
     /// get pid of process
@@ -235,6 +298,27 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// Advances the stride by pass, which is given by priority
+    pub fn advance_stride(&self) {
+        let mut inner = self.inner_exclusive_access();
+        inner.stride += BIG_STRIDE / inner.priority;
+    }
+
+    /// Try to set new priority
+    pub fn set_priority(&self, new_priority: isize) -> isize {
+        if new_priority < 2 {
+            return -1;
+        }
+        let mut inner = self.inner_exclusive_access();
+        inner.priority = new_priority;
+        new_priority
+    }
+
+    /// Get current stride
+    pub fn get_stride(&self) -> isize {
+        self.inner_exclusive_access().stride
     }
 }
 
